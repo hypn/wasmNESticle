@@ -40,9 +40,14 @@ int NESwrite(word a,byte d);
 
 //---------------------------------
 //hardware internal registers
-word ppumemaddr; //address for next write in ppu memory
+//The PPU's scroll/address registers, as on the real chip ("loopy" registers). One 15-bit address
+//format serves both VRAM access and scrolling:  0yyy NN YYYYY XXXXX = fine Y, nametable, coarse Y, coarse X.
+word ppumemaddr; //"v": current address - the VRAM address for $2007, and the scroll position while drawing
+word ppu_t;      //"t": temporary address; $2000/$2005/$2006 writes go here and are copied to v
+byte ppu_x;      //fine X scroll (0-7)
+char ppuw;       //write toggle shared by $2005 and $2006 (reset by reading $2002)
+byte ppu_nty;    //nametable-Y bit of the address the picture is currently drawn from
 char ppureadfuckup;  //first mem fuck up
-char scrollflip,ppuflip;
 byte spritememaddr; //next write in sprite memory
 
 volatile byte vblank; //are we in a vblank ?
@@ -91,7 +96,7 @@ int resetNEShardware()
  if (!NESinitialized) return -1;
  if (!numrom) {msg.error("No rom data!"); return -1;}
 
- scrollflip=0; ppuflip=0;
+ ppuw=0; ppu_t=0; ppu_x=0; ppu_nty=0;
  ppumemaddr=0; ppureadfuckup=0;
  spritememaddr=0;
 
@@ -208,11 +213,33 @@ void NES_ppumemory::write(word a,byte d)
 //byte acceptna=0;
 
 
+//Tells the video layer where the picture is scrolled to from now on, given a PPU address v. The picture
+//uses v's coarse X, fine Y, coarse Y and nametable, plus the fine X register. firstrow is the first frame
+//row that is drawn with that address (-STARTFRAME for the top of the frame); delay is passed on to the event.
+static void emitscroll(word v,int firstrow,int delay)
+{
+ nv->sl.addevent(SE_NATABLE,(v>>10)&3,delay);
+ nv->sl.addevent(SE_SCROLLX,((v&31)<<3)|ppu_x,delay);
+ int coarsey=(v>>5)&31;
+ if (coarsey<30)   //rows 30/31 (the attribute bytes) cannot be shown as a scroll position
+   nv->sl.addevent(SE_SCROLLY,coarsey*8+((v>>12)&7)-firstrow-STARTFRAME,delay);
+}
+
+#define PPURENDERING (ram[0x2001]&0x18) //background or sprites on: the PPU is using its scroll address
+
 void startframe()
 {
  frame=1;     //during rendering of frame
  vblank=0;    //not in vblank
  nv->sl.addevent(SE_FRAMESTART,0);
+
+ //at the end of vblank a drawing PPU loads its address from t: this is where the frame's scroll comes from
+ if (PPURENDERING)
+  {
+   ppumemaddr=ppu_t;
+   ppu_nty=(ppu_t>>11)&1;
+   emitscroll(ppu_t,-STARTFRAME,0);
+  }
 }
 
 void startvblank()
@@ -235,10 +262,10 @@ int neswrite2000(WORD a,BYTE d)
   switch (a)
   {
    case 0x2000: //PPU control register 1
-     if ((ram[0x2000]&0x80) || (ram[0x2001]&0x10))
-     {
-      nv->sl.addevent(SE_NATABLE,d&3);
-     }
+     ppu_t=(ppu_t&~0x0C00)|((d&3)<<10);
+     //during the frame the picture follows t's nametable-X bit from the next line, but its nametable-Y
+     //bit only changes when v is next loaded from t
+     if (frame && PPURENDERING)  nv->sl.addevent(SE_NATABLE,(ppu_nty<<1)|((ppu_t>>10)&1),1);
 
      //set pattern tables
      if ((d&0x8)!=(ram[a]&0x8))  nv->sl.addevent(SE_SPRITEPT,d&0x8);
@@ -247,6 +274,13 @@ int neswrite2000(WORD a,BYTE d)
 //     if (CPUtickframe) msg.printf(1,"write[%X]=%X",a,d);
      return 0;
    case 0x2001: //PPU control register 2
+     //turning the PPU on part way through the frame: it starts drawing from its current address
+     if (frame && !PPURENDERING && (d&0x18))
+      {
+       word v=(ppumemaddr&~0x041F)|(ppu_t&0x041F); //(the horizontal bits are reloaded from t each line)
+       ppu_nty=(v>>11)&1;
+       emitscroll(v&0x7FFF,getscanline(),1);
+      }
 
      //turn things on/off
      if ((d&0x8)!=(ram[a]&0x8))  nv->sl.addevent(SE_BG,d&0x8);
@@ -264,25 +298,38 @@ int neswrite2000(WORD a,BYTE d)
       ((byte *)spritemem)[spritememaddr++]=d;
       return 0;
    case 0x2005: //Background scroll
-      if (!scrollflip)  {nv->sl.addevent(SE_SCROLLX,d);} //write scrollX
-                  else
-                  {
-                   //int line=getscanline();
-                   if (!frame || d>=239) nv->sl.addevent(SE_SCROLLY,d);
-                    //  else nv->sl.addevent(SE_SCROLLY,0);
-                        // else nv->sl.addevent(SE_SCROLLY,d-line-8);
-                  }//    sl.addevent(SE_NATABLE,ram[0x2000]&3);}
-      scrollflip^=1;
+      if (!ppuw)
+       { //first write: X
+        ppu_t=(ppu_t&~0x001F)|(d>>3);
+        ppu_x=d&7;
+        if (frame && PPURENDERING)  nv->sl.addevent(SE_SCROLLX,((ppu_t&31)<<3)|ppu_x,1); //(used from the next line)
+       }
+      else
+       { //second write: Y. Only t changes, so mid-frame this affects the next frame, as on the real PPU.
+        ppu_t=(ppu_t&~0x73E0)|((d&7)<<12)|((d&0xF8)<<2);
+       }
+      ppuw^=1;
      return 0;
 
    case 0x2006: //PPU memory address
-     ppuflip^=1;
-     ((byte *)&ppumemaddr)[ppuflip]=d;
+     if (!ppuw)  ppu_t=(ppu_t&0x00FF)|((d&0x3F)<<8);   //first write: high bits (bit 14 is cleared)
+      else
+       { //second write: low byte, then v=t
+        ppu_t=(ppu_t&0x7F00)|d;
+        ppumemaddr=ppu_t;
+        //While the PPU is drawing, v is the scroll position too: this is how games split the screen
+        //(e.g. a status bar). The new position is first used by the next scanline.
+        if (frame && PPURENDERING)
+         {
+          ppu_nty=(ppumemaddr>>11)&1;
+          emitscroll(ppumemaddr,getscanline()+1,1);
+         }
+       }
+     ppuw^=1;
      ppureadfuckup=1;
-//     if (!ppuflip && (kbstat&KB_CTRL)) msg.printf(1,"ppu mem addr set to %X frame=%d",ppumemaddr,frame);
       return 0;
    case 0x2007: //PPU data write
-      ppu->write(ppumemaddr,d);
+      ppu->write(ppumemaddr&0x3FFF,d);
       ppumemaddr+=(ram[0x2000]&4) ? 32 : 1;
       ppureadfuckup=0;
       return 0;
@@ -309,12 +356,9 @@ WORD nesread2000(WORD a)
    case 0x2002: //PPU status register
     {
 //    if (CPUtickframe)      msg.printf(2,"PPU status read %X",s);
-      scrollflip=0; ppuflip=0;
-      if (frame)
-      {
-      ram[0x2000]&=~3;
-      nv->sl.addevent(SE_NATABLE,0);
-      }
+      ppuw=0;
+      //(the original also forced the nametable to 0 on every status read during the frame - a workaround for
+      // the lack of a scroll model: reading $2002 does not touch the PPU's scroll registers on real hardware)
 
 //      acceptna=1;
       if (vblank) return 0x80;
@@ -345,7 +389,7 @@ WORD nesread2000(WORD a)
    case 0x2007: //PPU data read
     {
 //      msg.printf(2,"PPU data read %X",ppumemaddr);
-      byte d=mmc->ppuread(ppumemaddr); //use memory mapper
+      byte d=mmc->ppuread(ppumemaddr&0x3FFF); //use memory mapper
       if (ppureadfuckup) {ppureadfuckup=0; return d;}
       ppumemaddr+=(ram[0x2000]&4) ? 32 : 1;
       return d;

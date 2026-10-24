@@ -9,7 +9,7 @@ struct sevent
 {
  unsigned line; //line that it occurred
  byte type; //type of event
- byte data; //actual data
+ short data; //actual data (16 bit: SE_SCROLLY can be negative or larger than a byte)
 
  //event types
  #define SE_NONE    0
@@ -55,8 +55,10 @@ struct seventlist
  void reset() {num=0;} //no events
  void add(sevent &t);
 
- void addevent(byte type,byte data)
-    {sevent t; t.type=type; t.data=data; add(t);}
+ //delay: the event takes effect that many lines after the current one (a PPU address written
+ //during a scanline is first used by the next scanline)
+ void addevent(byte type,int data,int delay=0)
+    {sevent t; t.type=type; t.data=(short)data; t.line=getscanline()+delay; add(t);}
  void print(int x,int y);
  seventlist() {reset();}
 };
@@ -68,7 +70,10 @@ struct seventlist
 
 struct scontext
 {
- byte sx,sy; //scroll position
+ byte sx;   //horizontal scroll position
+ short sy;  //vertical scroll: the name table row at frame row r is r+sy+STARTFRAME. This is the scroll
+            //written to the PPU for the top of the frame; after a mid-frame change of the PPU's address
+            //(a $2006 write) it is derived from that address and may be negative or above 239.
  byte natable; //name table
  byte sprites,bg;     //0-off 1-on
  byte bgpt,spritept; //pattern table for bg/sprite
@@ -94,8 +99,8 @@ struct scontext
  int operator ==(scontext &t) //comparison
  {
   return
-   *((int *)this)==*((int *)&t) &&
-   *(((int *)this)+1)==*(((int *)&t)+1) 
+   sx==t.sx && sy==t.sy && natable==t.natable && sprites==t.sprites && bg==t.bg &&
+   bgpt==t.bgpt && spritept==t.spritept && extra==t.extra
    && ptn[0]==t.ptn[0] && ptn[1]==t.ptn[1];
  }
 

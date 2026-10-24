@@ -50,8 +50,7 @@ void seventlist::add(sevent &t)
  {
   if (num>0 && s[num-1]==t) return;
   if (num>511) return;
-  t.line=getscanline(); //(getscanline()+3)&(~7);
-  s[num++]=t;
+  s[num++]=t;   //(t.line was set by the caller: the current scanline, plus any delay)
  } //add event
 
 
@@ -62,11 +61,9 @@ void scontext::operator +=(sevent &e)
  int i;
  switch (e.type)
   {
-   case SE_NATABLE: natable=e.data; break;
-   case SE_SCROLLX: sx=e.data; break;
-   case SE_SCROLLY:
-    if (e.data<=239) sy=e.data;
-   break;
+   case SE_NATABLE: natable=e.data&3; break;
+   case SE_SCROLLX: sx=(byte)e.data; break;
+   case SE_SCROLLY: sy=e.data; break;
    case SE_SPRITE: sprites=e.data ? 1 : 0; break;
    case SE_BG: bg=e.data ? 1 : 0; break;
    case SE_BGPT: bgpt=e.data ? 1 : 0; break;

@@ -37,6 +37,9 @@ I have not yet played a game with them.)
   against a fake sound card.
 * `scroll.js` + `make_scroll_rom.py`: a ROM that scrolls across all four nametables with the left 8 pixels
   masked; regression test for a crash in the nametable-cache blit (negative-width rectangles).
+* `split.js` + `make_split_rom.py`: a ROM whose nametable rows encode their own number; the test decodes a screenshot
+  line by line and checks the top-of-frame scroll, a `$2006` mid-frame split at three IRQ lines (exactly the line after the
+  IRQ line), the mid-frame `$2005` X change, and that a mid-frame `$2005` Y write has no effect (as on hardware).
 * `irq_jam.js` + `make_irqjam_rom.py`: an invalid opcode inside an IRQ handler must stop the CPU with NESticle's
   message, not hang the emulator (checked in a child process with a time limit).
 * `hotkeys.js`: F-key menu shortcuts (F8 toggles sound, …) and that keys without a shortcut do nothing.
@@ -78,8 +81,12 @@ platform layer, blitters, tile/sprite renderers, and 6502 core are new.
   cycles; sweep units are implemented but untested. F8 / Settings → Toggle sound mutes.
 * **Not done:** sprite and scrolling accuracy beyond what the original code does, mappers beyond the
   original `mmc.cpp`, persistence of battery saves/snapshots across page reloads (they live in memory).
-* Only my small test ROM has been run; none of your homebrew yet. Real ROMs may still expose bugs
-  in the PPU (scrolling, sprite 0 hit, 8x16 sprites, mappers) that this ROM doesn't touch.
+* **Scrolling:** the PPU's scroll registers (t, v, fine X, write toggle) are modelled, so split screens that reset the
+  scroll with `$2006` (status bars) work, with the new scroll starting on the line after the write. Not modelled: mid-line
+  timing (a change always takes effect on a line boundary), the PPU's own vertical wrap quirks for scroll Y >= 240, and
+  scroll state in save states. The sprite-0 hit is still NESticle's approximation.
+* Only my small test ROMs have been run in the repo's tests. Real ROMs may still expose bugs in the PPU (sprite 0 hit,
+  8x16 sprites, mappers beyond NESticle's) that they don't touch.
 * **Compiler difference worth knowing:** the original compiler (Watcom) has *unsigned* plain `char`.
   The build uses `-funsigned-char`; without it sprite flips were wrong (1-bit `char` bitfields read as
   -1) and every GUI font rendered in the same colour.

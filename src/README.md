@@ -16,6 +16,7 @@ Changes made to the original files:
 | `nesvideo.h`, `vol.h` | removed redundant `Class::` qualification on member declarations; `vol.h`: `#pragma pack(1)` on the 18-byte on-disk header |
 | `command.cpp`, `mmc.cpp` | string literal → `char *` casts |
 | `stddlg.cpp` | Watcom-only `_heapset` heap check replaced by a message; `Exit` (`q`) now does the same as Free ROM (there is nowhere to exit to in a browser) |
+| `nes.cpp`, `slist.h`, `slist.cpp` | **PPU scroll model.** The $2000/$2005/$2006 handlers now keep the PPU's real scroll registers (t, v, fine X, shared write toggle) and emit scroll events from them: at the start of the frame, and mid-frame when a `$2006` write reloads the address (split screens / status bars), a `$2005` X write or a `$2000` write changes the next lines, or rendering is switched on part way. Event data is 16 bit and a context's `sy` is a signed `short` so a mid-frame scroll can be expressed; events can be delayed one line (writes take effect from the next scanline). Removed the original's mid-frame `$2005` Y shortcut (`d>=239`) and its `$2002`-read-resets-the-nametable workaround. VRAM accesses mask the address to 14 bits |
 | `rom.cpp` | `m_free` (Free ROM) also shows the menus again afterwards |
 | `dd.h` | `surface` holds a plain byte buffer instead of a DirectDraw surface |
 | `message.cpp` | messages are also written to the console; `vsprintf` → `vsnprintf` (200-byte buffer) |

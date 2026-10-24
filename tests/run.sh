@@ -15,5 +15,6 @@ node tests/audio.js "$out"
 node tests/hotkeys.js
 node tests/scroll.js "$out"
 node tests/irq_jam.js "$out"
+node tests/split.js "$out"
 node tests/web_glue_test.js "$out/test.nes" "$out" "$out/audio_pulse.nes"
 echo "all tests passed"

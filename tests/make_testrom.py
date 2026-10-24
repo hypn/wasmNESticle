@@ -49,6 +49,7 @@ label('notA'); LDAi(0x16)
 label('setcol'); emit(0xAA)                           # TAX
 LDAi(0x3F); STAa(0x2006); LDAi(0x01); STAa(0x2006); STXa(0x2007)
 LDAi(0); STAa(0x2005); STAa(0x2005)
+LDAi(0x80); STAa(0x2000)                              # restore PPUCTRL (nametable 0): the $2006 writes above changed t's nametable bits
 emit(0x40)                                            # RTI
 label('paldata')
 emit(0x0F, 0x16, 0x2A, 0x12) ; emit(*([0x0F] * 12)) ; emit(0x0F, 0x30, 0x21, 0x27) ; emit(0x0F, 0x30, 0x21, 0x11)

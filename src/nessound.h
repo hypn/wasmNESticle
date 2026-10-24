@@ -5,112 +5,87 @@
 
 #include "uutimer.h"
 
-struct controlreg1
+// Model of the NES sound chip (APU): two pulse channels, triangle, noise and delta-modulation
+// (sample) channel. The 1997 mixer in this file was a rough approximation (wrong pitch, no
+// envelope/sweep/length model, silent noise and sample channels); this replaces it, keeping the
+// interface the rest of NESticle uses.
+//
+// Register writes take effect immediately. update() then renders one emulated frame's worth of
+// samples, clocking the frame sequencer (envelope/linear counter x4, length/sweep x2) in quarters.
+
+struct apupulse
 {
- byte playbackrate:4;
- byte envelopefixed:1;
- byte holdnote:1;
- byte dutycycle:2;
+ byte duty, halt, constvol, vol;               // $4000
+ byte sweepen, sweepperiod, sweepneg, sweepshift, sweepreload, sweepdiv;   // $4001
+ int  timer;                                   // 11-bit period
+ int  len;                                     // length counter
+ byte envstart, envdiv, envdecay;
+ byte seq;                                     // position in the 8-step duty sequence
+ double ctr;                                   // CPU cycles until the next sequencer step
+ byte ones;                                    // pulse 1 negates with ones' complement
+ int  target() const;
+ int  out() const;
 };
 
-struct controlreg2
+struct apuTriangle
 {
- byte freqrange:3;
- byte freqselect:1;     //0:low -> high 1:high to low
- byte freqchangespeed:3;
- byte freqvariable:1; //0=fixed freq 1=variable freq
+ byte control, linearload, linear, reloadflag;
+ int  timer, len;
+ byte seq;
+ double ctr;
 };
 
-struct frequencyreg
+struct apunoise
 {
- unsigned short x;
-
- short getfreq() {return x&0x7FF;}
- byte gettime() {return x>>11;}
+ byte halt, constvol, vol, mode;
+ int  period, len;
+ byte envstart, envdiv, envdecay;
+ unsigned short shift;
+ double ctr;
 };
 
-
-class neschannel
+struct apudmc
 {
- friend class nessound;
-
- protected:
-
- union
- {
-  byte   r[4]; //individual byte registers
-  struct
-  {
-   controlreg1 cr1;
-   controlreg2 cr2;
-   frequencyreg fr;
-  } sr;
- };
-
- byte enabled; //is the channel enabled?
-
- byte noteon; //is the note on?
- int dur; //duration of note left (in samples)
- int freq; //frequency (correct)
-
- int K; //freq counter increment
- int deltaK; //change in freq counter over time
- int count; //frequency counter (period is 0x10000)
- short vol; //current 16-bit volume
-
- public:
- void setenable(byte x);
- void reset();
- void startnote();
- void stopnote();
- void setdeltaK();
-
- neschannel() {reset();}
- void write(byte a,byte d);
- virtual void mix8(short *b,int nums) {}
- virtual void mix16(short *b,int nums) {}
- virtual void setvolume() {}
- virtual void print(int x,int y);
+ byte irqen, loop, level;
+ int  period;
+ unsigned short addr, startaddr;
+ int  bytesleft, startlen;
+ byte buf, bufempty, shiftreg, bitsleft, silence, irq;
+ double ctr;
 };
-
-class squarewave:public neschannel
-{
- public:
- virtual void mix16(short *b,int nums);
- virtual void setvolume();
-};
-
-class trianglewave:public neschannel
-{
- public:
- virtual void mix16(short *b,int nums);
- virtual void setvolume();
-};
-
-
-
-//------------------
 
 class nessound
 {
- neschannel *ch[5]; //5 channels
+ apupulse  sq[2];
+ apuTriangle tri;
+ apunoise  noi;
+ apudmc    dmc;
+ double hpx, hpy;                              // DC-blocking filter state
+ byte   hpprimed;
+ byte   seqstep;                               // frame sequencer position (half-frame clocks on odd steps)
+
+ void quarterframe();
+ void halfframe();
+ void dmcrestart();
+ void dmcfetch();
+ double dmcstep(double cycles);                // advance the sample channel, returns its mean level
 
  public:
- byte enablebits;
- void write(byte a,byte d);
- void setenable(byte d); //set sound enables
+ byte enablebits;                              // last value written to $4015
+ void write(byte a,byte d);                    // register $4000+a
+ void setenable(byte d);                       // write to $4015
+ byte readstatus();                            // read of $4015
  void reset();
  void print();
  nessound();
  ~nessound();
 
- //mixing buffer
+ //most recently rendered block (also shown by the wave output window)
  static short mixingbuf[4096];
 
- //called periodically to do mixing
+ //called once per emulated frame (timer tick): renders and outputs that frame's samples
  void update(int nums);
- void mix(int nums); //mixes nums bytes and outputs it
- void mix16(short *buf, int nums); //16 bit mixing
+ void mix16(short *buf, int nums);             //render nums samples (mono, signed 16 bit)
 };
 
 extern nessound *ns;

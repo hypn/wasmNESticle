@@ -66,7 +66,7 @@ input *inputdevice[2];
 inputdevicesettings *ids;
 
 //sound sampling rate (default)
-int SOUNDRATE=22050;
+int SOUNDRATE=44100;
 
 
 GUIVOL guivol;

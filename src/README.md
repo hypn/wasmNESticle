@@ -18,6 +18,10 @@ Changes made to the original files:
 | `stddlg.cpp` | Watcom-only `_heapset` heap check replaced by a message |
 | `dd.h` | `surface` holds a plain byte buffer instead of a DirectDraw surface |
 | `message.cpp` | messages are also written to the console; `vsprintf` → `vsnprintf` (200-byte buffer) |
+| `nessound.h`, `nessound.cpp` | rewritten: the 1997 mixer was an approximation (pitch ~17% sharp, no envelope/sweep/length model, silent noise and sample channels). Now a model of the NES sound chip: 2 pulse, triangle, noise, DMC. Same interface (`write`, `setenable`, `enablebits`, `mixingbuf`, `soundenabled`, …) |
+| `cpu.cpp` | each emulated frame calls `ns->update()` with that frame's share of `SOUNDRATE` samples |
+| `nes.cpp` | `$4015` reads return the channel status |
+| `main.cpp` | `SOUNDRATE` 22050 → 44100 |
 | `nesdlg.cpp` | File → Load ROM first asks the web page to open the browser's file picker |
 
 Everything is compiled with `-funsigned-char` (the original compiler's default); see `../README.md`.

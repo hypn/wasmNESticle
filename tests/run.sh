@@ -11,5 +11,7 @@ node tests/rom_features.js "$out/test.nes" "$out"
 node tests/dialog_flow.js "$out/test.nes" "$out"
 node tests/keys_dialog.js "$out"
 ./build.sh web
-node tests/web_glue_test.js "$out/test.nes" "$out"
+node tests/audio.js "$out"
+node tests/hotkeys.js
+node tests/web_glue_test.js "$out/test.nes" "$out" "$out/audio_pulse.nes"
 echo "all tests passed"

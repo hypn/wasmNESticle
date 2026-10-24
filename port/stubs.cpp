@@ -8,9 +8,8 @@ char buildcompiler[] = "Emscripten";
 int buildcompilerversionhigh = __EMSCRIPTEN_major__;
 int buildcompilerversionlow = __EMSCRIPTEN_minor__;
 
-// no sound output yet (nessound.cpp checks this before touching the audio device)
-byte soundinstalled = 0;
-void clearprimary() {}
+// the web page provides the audio device (see port/platform.cpp)
+byte soundinstalled = 1;
 
 // DirectDraw diagnostics dialog (Win95 only): nothing to report
 void ddrawinfo() {}

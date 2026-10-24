@@ -91,7 +91,7 @@ int menu::keyhit(char kbscan, char key) {
   for (class menuitem* item = this->m; item->text; item++) {
     char shortcut = item->key;
     if (shortcut & 0x80 && (shortcut & 0x7F) == kbscan
-        || (!(shortcut & 0x80) && shortcut == key)
+        || (!(shortcut & 0x80) && shortcut && shortcut == key)   /* (items without a shortcut never match) */
     ) {
       item->menufunc();
       return 1;
@@ -328,19 +328,14 @@ class menuitem* GUIhmenu::menuhittest(int x, int y, int &sx, int &sy) {
 }
 
 int GUIhmenu::keyhit(char kbscan, char key) {
-  int result;
-  if (key) {
-    for (class menuitem* item = this->tmenu->m; item->text; item++) {
-      /* kbscan == *item in dis (but that seems wrong) */
-      if (item->submenu && item->submenu->keyhit(kbscan, key)) {
-        return 1;
-      }
+  /* The decompiled version only looked for shortcuts `if (key)`, i.e. for keys with an ASCII value,
+     so the F-key shortcuts (F1-F9: scancode shortcuts, which have no ASCII value) never fired. */
+  for (class menuitem* item = this->tmenu->m; item->text; item++) {
+    if (item->submenu && item->submenu->keyhit(kbscan, key)) {
+      return 1;
     }
-    result = 0;
-  } else {
-    result = 0;
   }
-  return result;
+  return 0;
 }
 
 /* GUIpopupmenu */

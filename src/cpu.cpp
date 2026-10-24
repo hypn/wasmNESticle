@@ -22,6 +22,9 @@
 
 #include "prof.h"
 
+#include "nessound.h"
+#include "sound.h"
+
 int HBLANKCYCLES=115;
 int VBLANKLINES=33;
 int TIMERSPEED=60;
@@ -156,6 +159,14 @@ void tickemu()
 
  //create context list based on event list
  nv->sc.create(nv->sl);
+
+ //sound: render this frame's worth of samples (SOUNDRATE/TIMERSPEED, carrying the remainder)
+ {
+  static int soundacc=0;
+  soundacc+=SOUNDRATE;
+  int n=soundacc/TIMERSPEED; soundacc-=n*TIMERSPEED;
+  if (ns) ns->update(n);
+ }
 
  //done
  pf.cpu_timer.leave();

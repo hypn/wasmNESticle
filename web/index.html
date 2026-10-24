@@ -29,6 +29,40 @@
 <small>Double-click the canvas and press space for fullscreen (Esc leaves it).<br>
 Keys: arrows = D-pad · O = B · P = A · [ or Tab = Select · L or Enter = Start.</small>
 <script src="nesticle.js"></script>
+<!-- Audio runs on the audio thread: it queues the samples the page posts (mono, rate set by a
+     {rate} message), resamples them to the sound card's rate with linear interpolation, and keeps
+     the queue short so latency stays low. Underruns play silence. -->
+<script type="text/plain" id="worklet">
+class NesAudio extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.buf = new Float32Array(1 << 16); this.r = 0; this.w = 0;   // free-running indices
+    this.pos = 0; this.step = 1; this.srcRate = 44100;
+    this.port.onmessage = e => {
+      const d = e.data;
+      if (d.rate) { this.srcRate = d.rate; this.step = d.rate / sampleRate; return; }
+      for (let i = 0; i < d.length; i++) this.buf[(this.w++) & 0xFFFF] = d[i];
+      const maxQueued = Math.floor(this.srcRate * 0.25);            // never let more than ~250 ms build up
+      if (this.w - this.r > maxQueued) { this.r = this.w - (maxQueued >> 1); this.pos = 0; }
+    };
+  }
+  process(inputs, outputs) {
+    const chans = outputs[0], n = chans[0].length;
+    for (let i = 0; i < n; i++) {
+      let v = 0;
+      if (this.w - this.r >= 2) {
+        const a = this.buf[this.r & 0xFFFF], b = this.buf[(this.r + 1) & 0xFFFF];
+        v = a + (b - a) * this.pos;
+        this.pos += this.step;
+        const adv = Math.floor(this.pos); this.pos -= adv; this.r += adv;
+      }
+      for (let c = 0; c < chans.length; c++) chans[c][i] = v;
+    }
+    return true;
+  }
+}
+registerProcessor('nes-audio', NesAudio);
+</script>
 <script>
 // PC set-1 scancodes, as the DOS-era keyboard handler in NESticle expects (arrows share the numpad codes).
 const SCAN = {
@@ -76,8 +110,34 @@ function present() {
   ctx.putImageData(img, 0, 0);
 }
 
+// ---- audio: WebAudio needs a user gesture, so it starts on the first click or key press ----
+let audio = null, abuf = 0;
+async function startAudio() {
+  if (audio) { if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume(); return; }
+  audio = {};                                             // mark as starting (also if it fails)
+  try {
+    const ctx = new AudioContext({ latencyHint: 'interactive' });
+    ctx.resume();
+    const url = URL.createObjectURL(new Blob([$('worklet').textContent], { type: 'text/javascript' }));
+    await ctx.audioWorklet.addModule(url);
+    const node = new AudioWorkletNode(ctx, 'nes-audio', { numberOfInputs: 0, outputChannelCount: [1] });
+    node.port.postMessage({ rate: M._nes_audio_rate() });
+    node.connect(ctx.destination);
+    M._nes_audio_clear();                                 // drop anything queued before audio was ready
+    audio = { ctx, node };
+  } catch (e) { console.warn('Audio unavailable:', e); }
+}
+function pumpAudio() {
+  const n = M._nes_audio_pull(abuf, 8192);
+  if (!n || !audio || !audio.node) return;
+  const i16 = new Int16Array(M.HEAP16.buffer, abuf, n), f = new Float32Array(n);
+  for (let i = 0; i < n; i++) f[i] = i16[i] / 32768;
+  audio.node.port.postMessage(f, [f.buffer]);
+}
+
 function loop() {
   if (M._nes_frame() !== 0) return;     // the app asked to quit
+  pumpAudio();
   present();
   requestAnimationFrame(loop);
 }
@@ -93,6 +153,7 @@ function sendMouse() { M._nes_mouse(mx, my, mb); }
 function wireInput() {
   canvas.addEventListener('pointermove', e => { [mx, my] = canvasPos(e); mb = e.buttons & 7; sendMouse(); });
   canvas.addEventListener('pointerdown', e => {
+    startAudio();
     canvas.focus(); canvas.setPointerCapture(e.pointerId);
     [mx, my] = canvasPos(e); mb = e.buttons & 7; sendMouse(); e.preventDefault();
   });
@@ -102,6 +163,7 @@ function wireInput() {
     const sc = SCAN[e.code];
     if (!sc) return;
     if ((e.ctrlKey || e.metaKey) && e.code.startsWith('Key')) return;   // leave browser shortcuts alone
+    if (down) startAudio();
     M._nes_key(sc, down ? 1 : 0);
     e.preventDefault();
   };
@@ -154,6 +216,7 @@ createNesticle({
 }).then(mod => {
   M = mod;
   if (M._nes_init() !== 0) { setStatus('NESticle failed to initialise (see the console).'); return; }
+  abuf = M._malloc(8192 * 2);
   wireInput(); wireUi(); layout();
   canvas.focus();
   requestAnimationFrame(loop);

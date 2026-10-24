@@ -399,6 +399,7 @@ WORD nesread4000(WORD a)
 // msg.error("upper port read!!");
  switch (a)
  {
+  case 0x4015: return ns ? ns->readstatus() : 0; //sound channel status
   case 0x4016: //joystick
   case 0x4017:
    {

@@ -194,6 +194,23 @@ static int started = 0;
 static int viewx = 0, viewy = 0, vieww = 640, viewh = 480;   // part of the framebuffer worth showing
 static double lasttick = 0;
 
+//-------------------------------------------------------------------
+// audio: the mixer (nessound.cpp) hands over one frame of 16-bit mono samples per emulated frame;
+// they wait in a ring buffer until the web page pulls them into WebAudio. If nobody pulls (or the
+// page is slow) the oldest samples are dropped, which bounds latency.
+//-------------------------------------------------------------------
+#define AUDIORING 32768   // power of two: ~0.74 s at 44.1 kHz
+static short audioring[AUDIORING];
+static unsigned audiohead = 0, audiotail = 0;     // free-running counters
+
+void primaryoutput(short *buf, int nums)
+{
+ for (int i = 0; i < nums; i++) audioring[audiohead++ & (AUDIORING - 1)] = buf[i];
+ if (audiohead - audiotail > AUDIORING) audiotail = audiohead - AUDIORING;
+}
+void primaryskip(int) {}
+void clearprimary() {audiotail = audiohead;}
+
 // File -> Load ROM: if the page supplied Module.pickRom (it opens the browser's file chooser),
 // call it and report success; otherwise the caller falls back to the in-app file dialog.
 EM_JS(int, js_pick_rom, (), {
@@ -288,6 +305,18 @@ EMSCRIPTEN_KEEPALIVE int nes_state(int what)
 
 // tests: switch to a virtual clock and advance it by hand
 EMSCRIPTEN_KEEPALIVE void nes_virtual_time(double ms) {virtualclock = 1; virtualnow = ms;}
+
+// copies up to max queued audio samples (signed 16-bit mono, nes_audio_rate() Hz) to out
+EMSCRIPTEN_KEEPALIVE int nes_audio_pull(short *out, int max)
+{
+ int n = (int)(audiohead - audiotail);
+ if (n > max) n = max;
+ for (int i = 0; i < n; i++) out[i] = audioring[audiotail++ & (AUDIORING - 1)];
+ return n;
+}
+// discards everything queued (e.g. when audio starts late, so old sound is not played)
+EMSCRIPTEN_KEEPALIVE void nes_audio_clear(void) {clearprimary();}
+EMSCRIPTEN_KEEPALIVE int nes_audio_rate(void) {extern int SOUNDRATE; return SOUNDRATE;}
 
 EMSCRIPTEN_KEEPALIVE uint32_t *nes_framebuffer(void) {return rgba;}
 // rectangle of the framebuffer to display: 0=x 1=y 2=width 3=height

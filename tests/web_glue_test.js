@@ -2,12 +2,24 @@
 // pointer -> menu opens, keyboard -> scancodes, file input -> ROM runs.   node tests/web_glue_test.js <rom.nes> <outdir>
 const fs = require('fs'), path = require('path'), vm = require('vm');
 const { writePng } = require('./png.js');
-const [rom, outdir] = [process.argv[2], process.argv[3] || '.'];
+const [rom, outdir, audioRom] = [process.argv[2], process.argv[3] || '.', process.argv[4]];
 const dist = path.join(__dirname, '..', 'dist');
 const html = fs.readFileSync(path.join(dist, 'index.html'), 'utf8');
 const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).join('\n');
-if (!/<script src="nesticle.js"><\/script>\s*<script>/.test(html)) throw new Error('nesticle.js must load before the inline script');
+if (!/<script src="nesticle.js"><\/script>[\s\S]*<script>/.test(html)) throw new Error('nesticle.js must load before the inline script');
 
+// minimal WebAudio fakes: record what the page does with them
+const audioLog = { ctxs: 0, modules: [], nodes: [], posted: [], blobs: {} };
+class FakeAudioContext {
+  constructor() { audioLog.ctxs++; this.state = 'suspended'; this.destination = {}; this.audioWorklet = { addModule: async url => { audioLog.modules.push(url); } }; }
+  resume() { this.state = 'running'; }
+}
+class FakeAudioWorkletNode {
+  constructor(ctx, name, opts) { this.name = name; this.opts = opts; audioLog.nodes.push(this);
+    this.port = { postMessage: (m, t) => audioLog.posted.push(m) }; }
+  connect() { this.connected = true; }
+}
+let blobN = 0;
 const handlers = {}, els = {};
 function el(id) {
   return els[id] ||= {
@@ -21,6 +33,7 @@ function el(id) {
     }),
   };
 }
+el('worklet').textContent = html.match(/<script type="text\/plain" id="worklet">([\s\S]*?)<\/script>/)[1];
 const fire = (id, t, ev) => (handlers[id + ':' + t] || []).forEach(f => f({ preventDefault() {}, ...ev }));
 let raf = null;
 const sandbox = {
@@ -28,6 +41,9 @@ const sandbox = {
   document: { getElementById: el, fullscreenElement: null, addEventListener(t, f) { (handlers['document:' + t] ||= []).push(f); } },
   window: { innerWidth: 1920, innerHeight: 1080, devicePixelRatio: 1, addEventListener(t, f) { (handlers['window:' + t] ||= []).push(f); } },
   requestAnimationFrame: f => { raf = f; },
+  AudioContext: FakeAudioContext, AudioWorkletNode: FakeAudioWorkletNode,
+  Blob: class { constructor(parts) { this.text = parts.join(''); } },
+  URL: { createObjectURL: b => { const u = 'blob:' + (++blobN); audioLog.blobs[u] = b.text; return u; } },
   createNesticle: require(path.join(dist, 'nesticle.js')),
 };
 sandbox.createNesticle = (opts) => require(path.join(dist, 'nesticle.js'))({ ...opts, locateFile: f => path.join(dist, f) });
@@ -56,6 +72,10 @@ vm.runInContext(script, sandbox);
   ok(count((r, g, b) => r > 180 && g > 180 && b > 180) > 300, 'menu text is drawn (light-grey font, not the old all-peach)');
   ok(count((r, g, b) => g > 150 && r < 80 && b < 80) > 20, 'shortcut letters use the green font (font table applied)');
   fire('screen', 'pointerup', { clientX: 40, clientY: 4, buttons: 0, pointerId: 1 });
+  // audio starts on the first gesture (the menu click above), not before
+  ok(audioLog.ctxs === 1 && audioLog.modules.length === 1 && audioLog.nodes.length === 1 && audioLog.nodes[0].connected, 'audio context + worklet node created on the first gesture');
+  ok(audioLog.posted.some(m => m && m.rate === 44100), 'page tells the worklet the source rate (44100)');
+  ok(/registerProcessor\('nes-audio'/.test(audioLog.blobs[audioLog.modules[0]]), 'worklet module source is loaded');
   // double-click on the canvas -> fullscreen request; not repeated once already fullscreen
   fire('screen', 'dblclick', {}); await step(1);
   ok(el('stage').fs === 1, 'double-click requests fullscreen on the stage');
@@ -94,5 +114,40 @@ vm.runInContext(script, sandbox);
   shot('glue_esc.png');
   ok(count((r, g, b) => r === 0 && g === 0 && b === 124) > 1000, 'Escape brings the menu bar back');
   ok(el('screen').width === 640 && el('screen').height === 480, 'full desktop view restored with the GUI');
+  // a ROM that makes sound: sample blocks must reach the worklet
+  if (audioRom) {
+    const ab = fs.readFileSync(audioRom);
+    const before = audioLog.posted.filter(m => ArrayBuffer.isView(m)).reduce((n, m) => n + m.length, 0);
+    (handlers['file:change'] || []).forEach(f => f({ target: { files: [{ name: 'tone.nes', size: ab.length, arrayBuffer: async () => ab.buffer.slice(ab.byteOffset, ab.byteOffset + ab.length) }], value: '' } }));
+    await new Promise(r => setTimeout(r, 100));
+    await step(40);
+    const blocks = audioLog.posted.filter(m => ArrayBuffer.isView(m)), n = blocks.reduce((t, m) => t + m.length, 0) - before;
+    const peak = Math.max(...blocks.slice(-20).map(b => b.reduce((m, v) => Math.max(m, Math.abs(v)), 0)));
+    ok(n > 25 * 735, `sound ROM: ${n} samples posted to the worklet over ~40 frames`);
+    ok(peak > 0.03 && peak <= 1, `samples are scaled to +-1 (peak ${peak.toFixed(3)})`);
+  }
+  // the worklet itself, run for real in a sandbox with a 48 kHz sound card
+  {
+    const processors = {};
+    const ctx2 = vm.createContext({ sampleRate: 48000, Float32Array, Math,
+      AudioWorkletProcessor: class { constructor() { this.port = {}; } },
+      registerProcessor: (n, c) => { processors[n] = c; } });
+    vm.runInContext(audioLog.blobs[audioLog.modules[0]], ctx2);
+    const P = new processors['nes-audio'](), out = () => [new Float32Array(128)];
+    P.port.onmessage({ data: { rate: 44100 } });
+    const ramp = new Float32Array(2000).map((_, i) => i / 2000);
+    P.port.onmessage({ data: ramp });
+    const o = out(); P.process([], [o]);
+    const step = 44100 / 48000;
+    let maxerr = 0; for (let i = 0; i < 128; i++) maxerr = Math.max(maxerr, Math.abs(o[0][i] - (i * step) / 2000));
+    ok(maxerr < 1e-4, `worklet resamples 44.1k -> 48k by linear interpolation (max error ${maxerr.toExponential(1)})`);
+    let more = 0; for (let k = 0; k < 20; k++) { const oo = out(); P.process([], [oo]); more = oo[0][127]; }
+    ok(more === 0, 'underrun plays silence (no garbage when the queue runs dry)');
+    const P2 = new processors['nes-audio'](); P2.port.onmessage({ data: { rate: 44100 } });
+    P2.port.onmessage({ data: new Float32Array(30000).fill(0.5) });
+    ok(P2.w - P2.r <= 44100 * 0.25 / 2 + 1, `queue is capped to bound latency (${P2.w - P2.r} samples kept of 30000)`);
+    const stereo = [new Float32Array(128), new Float32Array(128)]; P2.process([], [stereo]);
+    ok(stereo[0][5] === 0.5 && stereo[1][5] === 0.5, 'mono output is copied to every output channel');
+  }
   process.exit(process.exitCode || 0);
 })().catch(e => { console.error(e); process.exit(1); });

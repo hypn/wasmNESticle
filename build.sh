@@ -30,7 +30,7 @@ case $target in
   node) out=dist/nesticle-node.js ;;
 esac
 LDFLAGS=(--no-entry -sALLOW_MEMORY_GROWTH=1 -sFORCE_FILESYSTEM=1 -sNO_EXIT_RUNTIME=1
-         -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,HEAPU32,FS -sEXPORTED_FUNCTIONS=_malloc,_free
+         -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,HEAPU32,HEAP16,FS -sEXPORTED_FUNCTIONS=_malloc,_free
          -sSTACK_SIZE=1MB -sINITIAL_MEMORY=64MB -sMODULARIZE=1 -sEXPORT_NAME=createNesticle)
 [ -d assets ] && LDFLAGS+=(--preload-file assets@/)
 [ "$target" = node ] && LDFLAGS+=(-sENVIRONMENT=node -sNODERAWFS=0)

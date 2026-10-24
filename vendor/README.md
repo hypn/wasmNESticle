@@ -14,3 +14,8 @@ port can show the real toolkit.
 
 That repo carries no license file; check with its author before redistributing. Everything else in
 `wasm/` is written for this port or derived from the leaked NESticle sources (see `src/README.md`).
+
+## Changes made here
+* `guimenu.cpp`: `GUIhmenu::keyhit` skipped shortcut lookup for keys without an ASCII value, so the
+  function-key shortcuts (F1–F9) never worked; fixed, and `menu::keyhit` ignores items with no shortcut.
+* `gui.cpp`: added `#include "dd.h"` and three pointer casts to compile under Clang.

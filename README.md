@@ -28,6 +28,9 @@ I have not yet played a game with them.)
   flip combinations, background palette colours, and the keyboard → `$4016` → A-button chain.
 * `dialog_flow.js` drives the in-app path: File → Load ROM lists the file, double-click loads it,
   CPU → Reset starts it.
+* `audio.js` + `make_audio_rom.py` run tiny sound ROMs and measure the samples (pitch, silence, length
+  counter, envelope, noise, sample channel). `web_glue_test.js` also runs the page's real audio worklet
+  against a fake sound card.
 * `make_testrom.py` writes an original NROM test ROM (no third-party code or art).
 
 ## Layout
@@ -57,9 +60,15 @@ platform layer, blitters, tile/sprite renderers, and 6502 core are new.
   were only where that reference deviates from real NMOS behaviour. *Not* covered: BRK, NMI/IRQ
   entry, decimal mode (absent on the NES), and page-cross cycle penalties. Undocumented opcodes
   are unsupported (the emulator reports "Unrecognized opcode", as the original did).
-* **Not done:** sound (`soundinstalled=0`; the NES APU code exists but no audio output), sprite and
-  scrolling accuracy beyond what the original code does, mappers beyond the original `mmc.cpp`,
-  persistence of battery saves/snapshots across page reloads (they live in memory).
+* **Sound:** all five channels (2 pulse, triangle, noise, sample/DMC) via a new model of the NES sound
+  chip (`src/nessound.cpp`) feeding WebAudio. Pitch, silence, length counters, envelopes, noise and
+  the sample channel are checked by `tests/audio.js` against the hardware formulas, but **nobody has
+  listened to it yet**. Audio starts on your first click or key press (browser rule). Simplifications:
+  register writes are applied per frame, not per CPU cycle (so digitised-PCM tricks via `$4011` won't
+  sound right); no 5-step frame mode, frame IRQ or DMC IRQ; the sample channel doesn't steal CPU
+  cycles; sweep units are implemented but untested. F8 / Settings → Toggle sound mutes.
+* **Not done:** sprite and scrolling accuracy beyond what the original code does, mappers beyond the
+  original `mmc.cpp`, persistence of battery saves/snapshots across page reloads (they live in memory).
 * Only my small test ROM has been run; none of your homebrew yet. Real ROMs may still expose bugs
   in the PPU (scrolling, sprite 0 hit, 8x16 sprites, mappers) that this ROM doesn't touch.
 * **Compiler difference worth knowing:** the original compiler (Watcom) has *unsigned* plain `char`.

@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NESticle (WebAssembly)</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0b14; --fg:#d8d8e8; --dim:#8a8aa0; --accent:#e8a64a; --panel:#15152a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 14px/1.4 system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; padding: 12px 16px; gap: 10px; overflow-x: hidden; }
+  input[type=file] { display: none; }   /* opened by File > Load ROM... inside NESticle */
+  #stage { position: relative; border: 1px solid #2e2e50; background: #000; line-height: 0;
+    display: flex; align-items: center; justify-content: center; }
+  #stage:fullscreen { width: 100vw; height: 100vh; border: 0; }
+  canvas { image-rendering: pixelated; cursor: none; outline: none; touch-action: none; display: block; }
+  #status { color: var(--dim); min-height: 1.4em; text-align: center; }
+  #drop { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(11,11,20,.8); color: var(--accent); font-size: 18px; line-height: 1.4; }
+  #stage.dragging #drop { display: flex; }
+  small { color: var(--dim); max-width: 640px; text-align: center; }
+</style>
+</head>
+<body>
+<input id="file" type="file" accept=".nes">
+<div id="stage"><canvas id="screen" width="640" height="480" tabindex="0"></canvas><div id="drop">Drop a .nes file to run it</div></div>
+<div id="status"></div>   <!-- only used for errors -->
+<small>Double-click the canvas and press space for fullscreen (Esc leaves it).<br>
+Keys: arrows = D-pad · O = B · P = A · [ or Tab = Select · L or Enter = Start.</small>
+<script src="nesticle.js"></script>
+<script>
+// PC set-1 scancodes, as the DOS-era keyboard handler in NESticle expects (arrows share the numpad codes).
+const SCAN = {
+  Escape:1, Digit1:2, Digit2:3, Digit3:4, Digit4:5, Digit5:6, Digit6:7, Digit7:8, Digit8:9, Digit9:10, Digit0:11,
+  Minus:12, Equal:13, Backspace:14, Tab:15, KeyQ:16, KeyW:17, KeyE:18, KeyR:19, KeyT:20, KeyY:21, KeyU:22, KeyI:23,
+  KeyO:24, KeyP:25, BracketLeft:26, BracketRight:27, Enter:28, NumpadEnter:28, ControlLeft:29, ControlRight:29,
+  KeyA:30, KeyS:31, KeyD:32, KeyF:33, KeyG:34, KeyH:35, KeyJ:36, KeyK:37, KeyL:38, Semicolon:39, Quote:40,
+  Backquote:41, ShiftLeft:42, Backslash:43, KeyZ:44, KeyX:45, KeyC:46, KeyV:47, KeyB:48, KeyN:49, KeyM:50,
+  Comma:51, Period:52, Slash:53, ShiftRight:54, NumpadMultiply:55, AltLeft:56, AltRight:56, Space:57,
+  F1:59, F2:60, F3:61, F4:62, F5:63, F6:64, F7:65, F8:66, F9:67, F10:68,
+  Numpad7:71, Home:71, Numpad8:72, ArrowUp:72, Numpad9:73, PageUp:73, NumpadSubtract:74,
+  Numpad4:75, ArrowLeft:75, Numpad5:76, Numpad6:77, ArrowRight:77, NumpadAdd:78,
+  Numpad1:79, End:79, Numpad2:80, ArrowDown:80, Numpad3:81, PageDown:81, Numpad0:82, Insert:82,
+  NumpadDecimal:83, Delete:83,
+};
+const $ = id => document.getElementById(id);
+const canvas = $('screen'), ctx = canvas.getContext('2d', { alpha: false }), status = $('status');
+let M, img = null, mx = 0, my = 0, mb = 0;
+let vx = 0, vy = 0, vw = 640, vh = 480;      // region of the emulator framebuffer being shown
+
+function setStatus(t) { status.textContent = t; }
+
+// Size the canvas (CSS pixels) to fill the space available - the whole screen in fullscreen, otherwise
+// the window below the top of the page - keeping the aspect ratio.
+function layout() {
+  const stage = $('stage');
+  const fs = document.fullscreenElement === stage;
+  const availW = fs ? window.innerWidth : Math.max(160, window.innerWidth - 36);
+  const availH = fs ? window.innerHeight : Math.max(120, window.innerHeight - stage.getBoundingClientRect().top - 90);
+  const scale = Math.min(availW / vw, availH / vh);
+  canvas.style.width = Math.round(vw * scale) + 'px';
+  canvas.style.height = Math.round(vh * scale) + 'px';
+}
+
+// Shows the part of the emulator framebuffer the app says is interesting: just the game picture when
+// it is maximised with the menu hidden, otherwise the whole desktop.
+function present() {
+  const fw = M._nes_width();
+  vx = M._nes_view(0); vy = M._nes_view(1); vw = M._nes_view(2); vh = M._nes_view(3);
+  if (vw !== canvas.width || vh !== canvas.height) { canvas.width = vw; canvas.height = vh; img = null; layout(); }
+  if (!img) img = ctx.createImageData(vw, vh);
+  const all = new Uint32Array(M.HEAPU8.buffer, M._nes_framebuffer(), fw * M._nes_height());
+  const out = new Uint32Array(img.data.buffer);
+  for (let y = 0; y < vh; y++) out.set(all.subarray((vy + y) * fw + vx, (vy + y) * fw + vx + vw), y * vw);
+  ctx.putImageData(img, 0, 0);
+}
+
+function loop() {
+  if (M._nes_frame() !== 0) return;     // the app asked to quit
+  present();
+  requestAnimationFrame(loop);
+}
+
+function canvasPos(e) {
+  const r = canvas.getBoundingClientRect();
+  // canvas pixel -> emulator framebuffer coordinate (the canvas may show only part of it)
+  return [vx + Math.max(0, Math.min(vw - 1, Math.floor((e.clientX - r.left) * vw / r.width))),
+          vy + Math.max(0, Math.min(vh - 1, Math.floor((e.clientY - r.top) * vh / r.height)))];
+}
+function sendMouse() { M._nes_mouse(mx, my, mb); }
+
+function wireInput() {
+  canvas.addEventListener('pointermove', e => { [mx, my] = canvasPos(e); mb = e.buttons & 7; sendMouse(); });
+  canvas.addEventListener('pointerdown', e => {
+    canvas.focus(); canvas.setPointerCapture(e.pointerId);
+    [mx, my] = canvasPos(e); mb = e.buttons & 7; sendMouse(); e.preventDefault();
+  });
+  canvas.addEventListener('pointerup', e => { [mx, my] = canvasPos(e); mb = e.buttons & 7; sendMouse(); });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  const key = down => e => {
+    const sc = SCAN[e.code];
+    if (!sc) return;
+    if ((e.ctrlKey || e.metaKey) && e.code.startsWith('Key')) return;   // leave browser shortcuts alone
+    M._nes_key(sc, down ? 1 : 0);
+    e.preventDefault();
+  };
+  canvas.addEventListener('keydown', key(true));
+  canvas.addEventListener('keyup', key(false));
+  canvas.addEventListener('blur', () => {   // don't leave keys/buttons stuck down
+    for (const sc of new Set(Object.values(SCAN))) M._nes_key(sc, 0);
+    mb = 0; sendMouse();
+  });
+}
+
+function safeName(name) {   // the 1997 code uses small fixed buffers and %s parsing
+  let base = name.replace(/\.nes$/i, '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 60) || 'rom';
+  return '/' + base + '.nes';
+}
+async function runFile(file) {
+  if (!file) return;
+  if (file.size > 4 * 1024 * 1024) { setStatus('That file is too large for a NES ROM.'); return; }
+  const path = safeName(file.name);
+  M.FS.writeFile(path, new Uint8Array(await file.arrayBuffer()));
+  const rc = M.ccall('nes_runrom', 'number', ['string'], [path]);
+  setStatus(rc ? '' : `Could not load ${file.name}`);
+  canvas.focus();
+}
+
+function enterFullscreen() {
+  Promise.resolve($('stage').requestFullscreen?.())
+    .then(() => canvas.focus())
+    .catch(() => setStatus('Fullscreen was blocked by the browser.'));
+}
+
+function wireUi() {
+  $('file').addEventListener('change', e => { runFile(e.target.files[0]); e.target.value = ''; });
+  $('file').addEventListener('cancel', () => canvas.focus());
+  // Double-click the canvas to go fullscreen. Leaving is the browser's own Esc (it swallows the key
+  // in fullscreen, so NESticle's Esc-toggles-menu is not triggered).
+  canvas.addEventListener('dblclick', () => { if (!document.fullscreenElement) enterFullscreen(); });
+  window.addEventListener('resize', layout);
+  document.addEventListener('fullscreenchange', layout);
+  const stage = $('stage');
+  for (const t of ['dragenter', 'dragover']) window.addEventListener(t, e => { e.preventDefault(); stage.classList.add('dragging'); });
+  for (const t of ['dragleave', 'drop']) window.addEventListener(t, e => { e.preventDefault(); stage.classList.remove('dragging'); });
+  window.addEventListener('drop', e => runFile(e.dataTransfer.files[0]));
+}
+
+createNesticle({
+  print: t => console.log(t), printErr: t => console.warn(t),
+  // NESticle's File > Load ROM... calls this; it runs inside the click, so the browser allows the picker
+  pickRom: () => $('file').click(),
+}).then(mod => {
+  M = mod;
+  if (M._nes_init() !== 0) { setStatus('NESticle failed to initialise (see the console).'); return; }
+  wireInput(); wireUi(); layout();
+  canvas.focus();
+  requestAnimationFrame(loop);
+}).catch(e => { setStatus('Failed to load: ' + e); console.error(e); });
+</script>
+</body>
+</html>

@@ -1,10 +1,13 @@
 # NESticle → WebAssembly
 
+![NESticle running in a browser: the menu bar, a game window, wave output, pattern tables, messages and palettes](screenshot.png)
+
 A port of the leaked 1997 NESticle sources to the browser with Emscripten.
+
 
 ## Build and run
 
-    source ~/emsdk/emsdk_env.sh          # emsdk 6.0.12 was used
+    source ~/emsdk/emsdk_env.sh           # emsdk 6.0.12 was used
     ./build.sh web                        # -> dist/
     python3 -m http.server -d dist 8000   # then open http://localhost:8000
 

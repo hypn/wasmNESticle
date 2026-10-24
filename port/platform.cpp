@@ -76,17 +76,25 @@ void surface::unlock()
  SCREENX = oldscrx; SCREENY = oldscry; PITCH = oldpitch;
 }
 int surface::blt(char *dest, int x, int y) {return blt(0, 0, xw, yw, dest, x, y);}
-// source rectangle is (sx,sy)-(sxw,syw) as lower-right coordinates; clipped to the screen
+// Copies the source rectangle (sx,sy)-(sxw,syw) (lower-right coordinates) to (x,y) on the
+// destination, clipping against both the surface and the screen like DirectDraw's Blt did. Games
+// scroll the nametable partly (or wholly) off screen, so empty/negative rectangles are normal and
+// must copy nothing. Returns 1 (success) in all those cases.
 int surface::blt(int sx, int sy, int sxw, int syw, char *dest, int x, int y)
 {
  if (!dds) return 0;
- if (sxw > xw) sxw = xw;
- if (syw > yw) syw = yw;
  int w = sxw - sx, h = syw - sy;
+ // clip to the source surface (moving the destination along with the source origin)
+ if (sx < 0) {x -= sx; w += sx; sx = 0;}
+ if (sy < 0) {y -= sy; h += sy; sy = 0;}
+ if (sx + w > xw) w = xw - sx;
+ if (sy + h > yw) h = yw - sy;
+ // clip to the destination (the screen)
  if (x < 0) {sx -= x; w += x; x = 0;}
  if (y < 0) {sy -= y; h += y; y = 0;}
  if (x + w > SCREENX) w = SCREENX - x;
  if (y + h > SCREENY) h = SCREENY - y;
+ if (w <= 0 || h <= 0) return 1;
  for (int j = 0; j < h; j++)
   memcpy(dest + (y + j) * PITCH + x, dds + (sy + j) * xw + sx, w);
  return 1;
@@ -287,11 +295,16 @@ EMSCRIPTEN_KEEPALIVE int nes_runrom(const char *path)
 // tests: byte i (0-13) of keyboard device dev's keymap (8 directions, then 6 buttons)
 EMSCRIPTEN_KEEPALIVE int nes_keymap(int dev, int i) {return cfg ? ((unsigned char *)&cfg->ids.km[dev & 1])[i % 14] : -1;}
 
-// tests: read a byte of the emulated CPU address space (RAM backing store)
+// tests/debugging: read a byte of the emulated CPU address space as the CPU sees it (ROM above $8000)
 extern byte *ram;
-EMSCRIPTEN_KEEPALIVE int nes_peek(int addr) {return ram ? ram[addr & 0xFFFF] : -1;}
+EMSCRIPTEN_KEEPALIVE int nes_peek(int addr)
+{
+ addr &= 0xFFFF;
+ if (addr >= 0x8000) return m6502rom ? m6502rom[addr] : -1;
+ return ram ? ram[addr] : -1;
+}
 
-// debugging aid: 0=pc 1=running 2=paused 3=clockticks 4=gui enabled 5=video present
+// debugging aid: 0=pc 1=running 2=paused 3=clockticks 4=gui enabled 5=video present 6=A 7=X 8=Y 9=S 10=P
 EMSCRIPTEN_KEEPALIVE int nes_state(int what)
 {
  extern byte CPURunning, CPUpaused; extern int guienabled;
@@ -299,6 +312,7 @@ EMSCRIPTEN_KEEPALIVE int nes_state(int what)
   {
    case 0: return m6502pc;  case 1: return CPURunning; case 2: return CPUpaused;
    case 3: return (int)m6502clockticks; case 4: return guienabled; case 5: return nv != 0;
+   case 6: return m6502af >> 8; case 7: return m6502x; case 8: return m6502y; case 9: return m6502s; case 10: return m6502af & 0xFF;
   }
  return -1;
 }

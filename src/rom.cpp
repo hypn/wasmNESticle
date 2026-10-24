@@ -170,10 +170,11 @@ void m_getrominfo()
  m_showmessages();
 }
 
+void enablegui();
 void m_free()
 {
  if (!romloaded) msg.error("ROM not loaded");
-  else freerom();
+  else {freerom(); enablegui();} //stops the CPU and unloads; show the menus again (a maximised game hides them)
 }
 
 void m_ramdump()

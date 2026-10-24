@@ -26,7 +26,7 @@ function el(id) {
     id, style: {}, classList: { add() {}, remove() {} }, textContent: '', width: 640, height: 480,
     addEventListener(t, f) { (handlers[id + ':' + t] ||= []).push(f); },
     clicks: 0, click() { this.clicks++; }, focus() {}, setPointerCapture() {}, requestFullscreen() { this.fs = (this.fs || 0) + 1; },
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 640, height: 480 }),
+    getBoundingClientRect() { return { left: 0, top: 0, width: parseInt(this.style.width) || 640, height: parseInt(this.style.height) || 480 }; },
     getContext: () => ({
       createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
       putImageData(img) { el.last = img; },
@@ -62,16 +62,20 @@ vm.runInContext(script, sandbox);
   ok(el('status').textContent === '', 'status line is empty when nothing is wrong');
   ok(!/id="fs"|id="scale"|Open ROM/.test(html), 'no Fullscreen/Scale/Open ROM buttons in the page');
   ok(/Double-click the canvas and press space for fullscreen/.test(html) && /O = B/.test(html) && /P = A/.test(html), 'help text lists fullscreen + key bindings');
+  const boxOf = () => [parseInt(el('screen').style.width), parseInt(el('screen').style.height)];
+  const menuBox = boxOf();
+  const D = (x, y) => ({ clientX: x * menuBox[0] / 640, clientY: y * menuBox[1] / 480 });   // desktop px -> box px
+  ok(menuBox[0] > 800 && Math.abs(menuBox[0] / menuBox[1] - 4 / 3) < 0.01, `menu view fills the window at the desktop's 4:3 (${menuBox.join('x')} css px)`);
   // click the CPU menu
-  fire('screen', 'pointermove', { clientX: 40, clientY: 4, buttons: 0, pointerId: 1 });
-  fire('screen', 'pointerdown', { clientX: 40, clientY: 4, buttons: 1, pointerId: 1 });
+  fire('screen', 'pointermove', { ...D(40, 4), buttons: 0, pointerId: 1 });
+  fire('screen', 'pointerdown', { ...D(40, 4), buttons: 1, pointerId: 1 });
   await step(3);
   shot('glue_menu.png');
   const bluish = count((r, g, b) => b > 60 && r < 40 && g < 40);   // desktop (0,0,76) + menu (0,0,124)
   ok(bluish > 200000, 'desktop is painted (' + bluish + ' blue pixels)');
   ok(count((r, g, b) => r > 180 && g > 180 && b > 180) > 300, 'menu text is drawn (light-grey font, not the old all-peach)');
   ok(count((r, g, b) => g > 150 && r < 80 && b < 80) > 20, 'shortcut letters use the green font (font table applied)');
-  fire('screen', 'pointerup', { clientX: 40, clientY: 4, buttons: 0, pointerId: 1 });
+  fire('screen', 'pointerup', { ...D(40, 4), buttons: 0, pointerId: 1 });
   // audio starts on the first gesture (the menu click above), not before
   ok(audioLog.ctxs === 1 && audioLog.modules.length === 1 && audioLog.nodes.length === 1 && audioLog.nodes[0].connected, 'audio context + worklet node created on the first gesture');
   ok(audioLog.posted.some(m => m && m.rate === 44100), 'page tells the worklet the source rate (44100)');
@@ -83,7 +87,7 @@ vm.runInContext(script, sandbox);
   ok(el('stage').fs === 1, 'double-click while fullscreen does nothing (Esc leaves)');
   sandbox.document.fullscreenElement = null;
   // File -> Load ROM... must open the browser's file chooser (the page's hidden <input>), not NESticle's dialog
-  const clk = (x, y) => { for (const [t, b] of [['pointermove', 0], ['pointerdown', 1], ['pointerup', 0]]) fire('screen', t, { clientX: x, clientY: y, buttons: b, pointerId: 1 }); };
+  const clk = (x, y) => { for (const [t, b] of [['pointermove', 0], ['pointerdown', 1], ['pointerup', 0]]) fire('screen', t, { ...D(x, y), buttons: b, pointerId: 1 }); };
   clk(300, 300); await step(2);   // dismiss the CPU menu opened earlier
   clk(12, 4); await step(2); clk(30, 14); await step(3);
   ok(el('file').clicks === 1, 'File > Load ROM... opens the browser file picker (input clicked ' + el('file').clicks + 'x)');
@@ -101,7 +105,15 @@ vm.runInContext(script, sandbox);
   shot('glue_rom.png');
   const scr = el('screen'), cssW = parseInt(scr.style.width), cssH = parseInt(scr.style.height);
   ok(scr.width === 256 && scr.height === 224, `canvas is cropped to the game picture (${scr.width}x${scr.height})`);
-  ok(cssH > 800 && Math.abs(cssW / cssH - 256 / 224) < 0.01, `game is scaled up to the window, aspect kept (${cssW}x${cssH} css px)`);
+  ok(cssW === menuBox[0] && cssH === menuBox[1], `the canvas box does not change size between menu view and game view (${menuBox.join('x')} -> ${cssW}x${cssH})`);
+  // the 256x224 picture is centred in the 4:3 box; the mouse maps through that (side bars clamp to the edge)
+  const at = (x, y) => { fire('screen', 'pointermove', { clientX: x, clientY: y, buttons: 0, pointerId: 1 }); return vm.runInContext('[mx, my]', sandbox); };
+  const view = [0, 1, 2, 3].map(i => vm.runInContext(`M._nes_view(${i})`, sandbox));
+  ok(JSON.stringify(view) === '[192,128,256,224]', 'game view is the centred 256x224 picture: ' + view);
+  ok(JSON.stringify(at(cssW / 2, cssH / 2)) === '[320,240]', 'mouse at the centre of the box -> centre of the game picture (320,240)');
+  ok(JSON.stringify(at(0, 0)) === '[192,128]' && JSON.stringify(at(cssW - 1, cssH - 1)) === '[447,351]', 'mouse in the side bars/corners clamps to the picture edge');
+  const sc = Math.min(cssW / 256, cssH / 224), ox = (cssW - 256 * sc) / 2;
+  ok(JSON.stringify(at(ox + 10 * sc + 1, 5 * sc + 1)) === '[202,133]', 'mouse inside the picture maps pixel-exactly (10,5) -> (202,133)');
   ok(!count((r, g, b) => r + g + b === 0) || count((r, g, b) => r + g + b === 0) < 2000, 'no black letterbox inside the canvas');
   // pointer position maps through the crop: the centre of the canvas is the centre of the game picture
   fire('screen', 'pointermove', { clientX: 0, clientY: 0, buttons: 0, pointerId: 1 });
@@ -113,6 +125,7 @@ vm.runInContext(script, sandbox);
   await step(3);
   shot('glue_esc.png');
   ok(count((r, g, b) => r === 0 && g === 0 && b === 124) > 1000, 'Escape brings the menu bar back');
+  ok(boxOf().join() === menuBox.join(), 'and the canvas box is still the same size');
   ok(el('screen').width === 640 && el('screen').height === 480, 'full desktop view restored with the GUI');
   // a ROM that makes sound: sample blocks must reach the worklet
   if (audioRom) {
@@ -125,6 +138,27 @@ vm.runInContext(script, sandbox);
     const peak = Math.max(...blocks.slice(-20).map(b => b.reduce((m, v) => Math.max(m, Math.abs(v)), 0)));
     ok(n > 25 * 735, `sound ROM: ${n} samples posted to the worklet over ~40 frames`);
     ok(peak > 0.03 && peak <= 1, `samples are scaled to +-1 (peak ${peak.toFixed(3)})`);
+  }
+  // a trap inside the emulator must not freeze the page: it reports, restarts, and keeps working
+  {
+    const warn = console.error; console.error = () => {};              // (the page logs the crash)
+    vm.runInContext("M._nes_frame = () => { throw new Error('simulated memory fault'); }", sandbox);
+    const oldM = vm.runInContext('M', sandbox);
+    for (let i = 0; i < 10 && !raf; i++) await new Promise(r => setTimeout(r, 10));
+    const f0 = raf; if (f0) { raf = null; f0(); }                         // the next frame traps
+    for (let i = 0; i < 200 && !/restarted/.test(el('status').textContent); i++) await new Promise(r => setTimeout(r, 25));
+    console.error = warn;
+    ok(/crashed and was restarted/.test(el('status').textContent), 'a trap is reported and the emulator restarted: ' + el('status').textContent);
+    ok(vm.runInContext('M', sandbox) !== oldM, 'a fresh emulator instance replaced the dead one');
+    ok(!!raf, 'the frame loop was re-armed');
+    await step(3);
+    ok(count((r, g, b) => r === 0 && g === 0 && b === 124) > 1000, 'the restarted emulator draws the menu bar again');
+    fire('screen', 'pointermove', { ...D(40, 4), buttons: 0, pointerId: 1 });
+    fire('screen', 'pointerdown', { ...D(40, 4), buttons: 1, pointerId: 1 });
+    await step(3);
+    ok(count((r, g, b) => r === 0 && g === 0 && b === 124) > 5000, 'and responds to the mouse (menu opens)');
+    fire('screen', 'pointerup', { ...D(40, 4), buttons: 0, pointerId: 1 });
+    sandbox.__t = 0;
   }
   // the worklet itself, run for real in a sandbox with a 48 kHz sound card
   {

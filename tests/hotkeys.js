@@ -33,5 +33,14 @@ const dist = path.join(__dirname, '..', 'dist');
   // another F-key shortcut: F5 = Save NES state
   tap(0x3F);
   ok(/state/i.test(since()), 'F5 (Save NES state) reaches its menu item');
+  // q (File > Exit) must not quit the page: it does what Free ROM does - stop the CPU and unload the ROM
+  ok(M._nes_state(1) === 1 && M._nes_state(5) === 1, 'before q: a ROM is running with its video window');
+  since(); tap(0x10);                           // Q
+  ok(M._nes_state(1) === 0 && M._nes_state(5) === 0, 'q stops the CPU and unloads the ROM (no video window left)');
+  ok(M._nes_state(4) === 1, 'the menus are shown again');
+  ok(/ROM freed/.test(since()), 'q reports "ROM freed" like File > Free ROM');
+  ok(M._nes_frame() === 0, 'the emulator keeps running (q does not quit the page)');
+  tap(0x10);                                    // q again with no ROM loaded
+  ok(M._nes_frame() === 0 && /not loaded/i.test(since()), 'q with no ROM loaded is harmless ("ROM not loaded")');
   process.exit(failed ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

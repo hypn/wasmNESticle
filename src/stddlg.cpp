@@ -217,16 +217,18 @@ void m_ddrawinfo()
 }
 #endif
 
-void m_quit()
-{
- quitgame();
-}
-
 
 
 
 GUImenu *gmenu=0;
 int guienabled=0;
+void m_free();
+//There is nowhere to exit to in a browser, so Exit (q) does what Free ROM does: stops the CPU and unloads the ROM.
+void m_quit()
+{
+ m_free();
+}
+
 void enablegui()
 {
  if (guienabled) return;

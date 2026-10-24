@@ -149,11 +149,13 @@ void tickemu()
       int line=getscanline(); //current scanline
       if (line<IRQline)
        {
-        m6502exec((IRQline-line)*HBLANKCYCLES); //execute until IRQ
+        //(like the non-IRQ paths, stop if the CPU hit an opcode it cannot run: it returns without
+        // advancing the clock, so ignoring this made the loop spin forever)
+        if (m6502exec((IRQline-line)*HBLANKCYCLES)!=0x10000) {cpuabort(); return;} //execute until IRQ
         m6502int();   //int!
         nv->sl.addevent(SE_IRQLINE,0);
   //      msg.printf(1,"IRQ");
-       } else m6502exec(framecycles-m6502clockticks); //just execute rest of frame
+       } else if (m6502exec(framecycles-m6502clockticks)!=0x10000) {cpuabort(); return;} //just execute rest of frame
      }
    }
 

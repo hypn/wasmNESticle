@@ -14,7 +14,9 @@
   #stage { position: relative; border: 1px solid #2e2e50; background: #000; line-height: 0;
     display: flex; align-items: center; justify-content: center; }
   #stage:fullscreen { width: 100vw; height: 100vh; border: 0; }
-  canvas { image-rendering: pixelated; cursor: none; outline: none; touch-action: none; display: block; }
+  /* the box keeps one size; a cropped game picture is centred in it (black side bars) */
+  canvas { image-rendering: pixelated; cursor: none; outline: none; touch-action: none; display: block;
+    object-fit: contain; object-position: center; background: #000; }
   #status { color: var(--dim); min-height: 1.4em; text-align: center; }
   #drop { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
     background: rgba(11,11,20,.8); color: var(--accent); font-size: 18px; line-height: 1.4; }
@@ -82,29 +84,33 @@ const $ = id => document.getElementById(id);
 const canvas = $('screen'), ctx = canvas.getContext('2d', { alpha: false }), status = $('status');
 let M, img = null, mx = 0, my = 0, mb = 0;
 let vx = 0, vy = 0, vw = 640, vh = 480;      // region of the emulator framebuffer being shown
+let fw = 640, fh = 480;                      // size of the whole emulator framebuffer (the NESticle desktop)
 
 function setStatus(t) { status.textContent = t; }
 
-// Size the canvas (CSS pixels) to fill the space available - the whole screen in fullscreen, otherwise
-// the window below the top of the page - keeping the aspect ratio.
+// Size the canvas box (CSS pixels) to fill the space available - the whole screen in fullscreen,
+// otherwise the window below the top of the page - keeping the aspect ratio of the NESticle desktop.
+// The box depends only on the desktop size, so it does not change when NESticle switches between its
+// menu view and its maximised-game view; the cropped game picture is centred inside it.
 function layout() {
   const stage = $('stage');
   const fs = document.fullscreenElement === stage;
   const availW = fs ? window.innerWidth : Math.max(160, window.innerWidth - 36);
   const availH = fs ? window.innerHeight : Math.max(120, window.innerHeight - stage.getBoundingClientRect().top - 90);
-  const scale = Math.min(availW / vw, availH / vh);
-  canvas.style.width = Math.round(vw * scale) + 'px';
-  canvas.style.height = Math.round(vh * scale) + 'px';
+  const scale = Math.min(availW / fw, availH / fh);
+  canvas.style.width = Math.round(fw * scale) + 'px';
+  canvas.style.height = Math.round(fh * scale) + 'px';
 }
 
 // Shows the part of the emulator framebuffer the app says is interesting: just the game picture when
 // it is maximised with the menu hidden, otherwise the whole desktop.
 function present() {
-  const fw = M._nes_width();
+  const w = M._nes_width(), h = M._nes_height();
+  if (w !== fw || h !== fh) { fw = w; fh = h; layout(); }          // the desktop was resized (Settings > Resolution)
   vx = M._nes_view(0); vy = M._nes_view(1); vw = M._nes_view(2); vh = M._nes_view(3);
-  if (vw !== canvas.width || vh !== canvas.height) { canvas.width = vw; canvas.height = vh; img = null; layout(); }
+  if (vw !== canvas.width || vh !== canvas.height) { canvas.width = vw; canvas.height = vh; img = null; }
   if (!img) img = ctx.createImageData(vw, vh);
-  const all = new Uint32Array(M.HEAPU8.buffer, M._nes_framebuffer(), fw * M._nes_height());
+  const all = new Uint32Array(M.HEAPU8.buffer, M._nes_framebuffer(), fw * fh);
   const out = new Uint32Array(img.data.buffer);
   for (let y = 0; y < vh; y++) out.set(all.subarray((vy + y) * fw + vx, (vy + y) * fw + vx + vw), y * vw);
   ctx.putImageData(img, 0, 0);
@@ -125,7 +131,7 @@ async function startAudio() {
     node.connect(ctx.destination);
     M._nes_audio_clear();                                 // drop anything queued before audio was ready
     audio = { ctx, node };
-  } catch (e) { console.warn('Audio unavailable:', e); }
+  } catch (e) { console.warn('Audio unavailable:', e); audio = null; }   // retried on the next gesture
 }
 function pumpAudio() {
   const n = M._nes_audio_pull(abuf, 8192);
@@ -135,20 +141,50 @@ function pumpAudio() {
   audio.node.port.postMessage(f, [f.buffer]);
 }
 
+// A WebAssembly trap (e.g. a memory fault) kills the whole emulator instance and cannot be caught
+// inside it. Rather than freezing the page, every call into the emulator goes through guard(); if one
+// traps we say so, throw the dead instance away and boot a fresh one. (Settings and the loaded ROM
+// are not carried over.)
+let crashing = false;
+function guard(fn) {
+  if (!M || crashing) return;
+  try { return fn(); } catch (e) { crashed(e); }
+}
+async function crashed(e) {
+  if (crashing) return;
+  crashing = true;
+  console.error('NESticle crashed:', e);
+  M = null;                              // stop feeding events to the dead instance
+  setStatus(`The emulator crashed (${e && e.message ? e.message : e}). Restarting…`);
+  try {
+    await boot();
+    crashing = false;
+    layout();
+    setStatus('The emulator crashed and was restarted - the ROM that was running is no longer loaded.');
+    requestAnimationFrame(loop);
+  } catch (e2) { setStatus('The emulator crashed and could not restart: ' + e2); }
+}
+
 function loop() {
-  if (M._nes_frame() !== 0) return;     // the app asked to quit
-  pumpAudio();
-  present();
+  if (!M || crashing) return;
+  try {
+    if (M._nes_frame() !== 0) return;   // the app asked to quit
+    pumpAudio();
+    present();
+  } catch (e) { crashed(e); return; }
   requestAnimationFrame(loop);
 }
 
 function canvasPos(e) {
   const r = canvas.getBoundingClientRect();
-  // canvas pixel -> emulator framebuffer coordinate (the canvas may show only part of it)
-  return [vx + Math.max(0, Math.min(vw - 1, Math.floor((e.clientX - r.left) * vw / r.width))),
-          vy + Math.max(0, Math.min(vh - 1, Math.floor((e.clientY - r.top) * vh / r.height)))];
+  // the shown region (vw x vh) is centred in the box with its aspect ratio kept (object-fit: contain)
+  const s = Math.min(r.width / vw, r.height / vh);
+  const ox = r.left + (r.width - vw * s) / 2, oy = r.top + (r.height - vh * s) / 2;
+  // box position -> emulator framebuffer coordinate (clicks in the side bars clamp to the nearest edge)
+  return [vx + Math.max(0, Math.min(vw - 1, Math.floor((e.clientX - ox) / s))),
+          vy + Math.max(0, Math.min(vh - 1, Math.floor((e.clientY - oy) / s)))];
 }
-function sendMouse() { M._nes_mouse(mx, my, mb); }
+function sendMouse() { guard(() => M._nes_mouse(mx, my, mb)); }
 
 function wireInput() {
   canvas.addEventListener('pointermove', e => { [mx, my] = canvasPos(e); mb = e.buttons & 7; sendMouse(); });
@@ -164,13 +200,13 @@ function wireInput() {
     if (!sc) return;
     if ((e.ctrlKey || e.metaKey) && e.code.startsWith('Key')) return;   // leave browser shortcuts alone
     if (down) startAudio();
-    M._nes_key(sc, down ? 1 : 0);
+    guard(() => M._nes_key(sc, down ? 1 : 0));
     e.preventDefault();
   };
   canvas.addEventListener('keydown', key(true));
   canvas.addEventListener('keyup', key(false));
   canvas.addEventListener('blur', () => {   // don't leave keys/buttons stuck down
-    for (const sc of new Set(Object.values(SCAN))) M._nes_key(sc, 0);
+    guard(() => { for (const sc of new Set(Object.values(SCAN))) M._nes_key(sc, 0); });
     mb = 0; sendMouse();
   });
 }
@@ -183,8 +219,9 @@ async function runFile(file) {
   if (!file) return;
   if (file.size > 4 * 1024 * 1024) { setStatus('That file is too large for a NES ROM.'); return; }
   const path = safeName(file.name);
-  M.FS.writeFile(path, new Uint8Array(await file.arrayBuffer()));
-  const rc = M.ccall('nes_runrom', 'number', ['string'], [path]);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const rc = guard(() => { M.FS.writeFile(path, bytes); return M.ccall('nes_runrom', 'number', ['string'], [path]); });
+  if (rc === undefined) return;          // the emulator crashed while loading; crashed() has reported it
   setStatus(rc ? '' : `Could not load ${file.name}`);
   canvas.focus();
 }
@@ -209,14 +246,20 @@ function wireUi() {
   window.addEventListener('drop', e => runFile(e.dataTransfer.files[0]));
 }
 
-createNesticle({
-  print: t => console.log(t), printErr: t => console.warn(t),
-  // NESticle's File > Load ROM... calls this; it runs inside the click, so the browser allows the picker
-  pickRom: () => $('file').click(),
-}).then(mod => {
+// Creates a fresh emulator instance and makes it the current one.
+async function boot() {
+  const mod = await createNesticle({
+    print: t => console.log(t), printErr: t => console.warn(t),
+    // NESticle's File > Load ROM... calls this; it runs inside the click, so the browser allows the picker
+    pickRom: () => $('file').click(),
+  });
+  if (mod._nes_init() !== 0) throw new Error('NESticle failed to initialise (see the console)');
+  abuf = mod._malloc(8192 * 2);
+  img = null; vx = vy = 0; vw = fw = 640; vh = fh = 480; mb = 0;
   M = mod;
-  if (M._nes_init() !== 0) { setStatus('NESticle failed to initialise (see the console).'); return; }
-  abuf = M._malloc(8192 * 2);
+}
+
+boot().then(() => {
   wireInput(); wireUi(); layout();
   canvas.focus();
   requestAnimationFrame(loop);
